@@ -1,6 +1,6 @@
 # ExpressLRS 固定翼自稳接收机固件
 
-基于 **ExpressLRS 3.6.4** 定制的 2.4GHz 接收机固件，在**接收机端直接实现固定翼横滚姿态自稳**（无需飞控）。目标硬件为 **ESP32-C3 Zero + MPU6500 + SX1280（E28 2G4M）**。
+基于 **ExpressLRS 3.6.4** 定制的 2.4GHz 接收机固件，在**接收机端直接实现固定翼横滚姿态自稳**（无需飞控）。目标硬件为 **ESP32-C3 Zero + MPU6050 模块（MPU6500 兼容驱动）+ SX1280（E28 2G4M）**。
 
 > 本项目是 ExpressLRS 的衍生作品，遵循 **GPLv3** 许可证（详见 [LICENSE](LICENSE)）。
 
@@ -22,9 +22,24 @@
 | 部件 | 型号 |
 |---|---|
 | MCU | ESP32-C3 Zero |
-| IMU | MPU6500（I2C） |
+| IMU | **MPU6050 模块**（I2C，接 VCC / GND / SDA / SCL 四根线） |
 | 射频 | SX1280（E28 2G4M 模块），2.4GHz |
 | 硬件定义 | `hardware/RX/DIY C3 2400 PWM.json` |
+
+### 硬件共用说明
+
+本项目与 [elrs-baro](https://github.com/ccw1975/elrs-baro) **共用同一套硬件设计图纸**，无需另做 PCB。图纸（原理图 / PCB / 嘉立创 EDA 备份）在：
+
+> https://github.com/ccw1975/elrs-baro/tree/master/hardware/EDA
+
+区别只在**焊接哪个模块**（二选一，不能同时使用）：
+
+| 用途 | 焊接模块 | 接线 |
+|---|---|---|
+| 自稳版（本项目） | **MPU6050 模块** | 找到板子上对应的 **VCC / GND / SDA / SCL** 焊点，把模块四根线焊上去即可（已实测可行） |
+| 气压计版（elrs-baro） | **SPL06-001 气压计** | 焊接气压计模块（占用同一组 I2C 总线） |
+
+> ⚠️ MPU6050 与 SPL06 气压计**不能同时接**，两者二选一：焊了 IMU 就烧本项目的自稳固件，焊了气压计就烧 baro 项目的固件。
 
 ## 编译与烧录
 
