@@ -211,6 +211,13 @@ typedef union {
     uint32_t raw;
 } rx_config_pwm_t;
 
+// 自稳参数有效性标记（新字段追加在结构体末尾，不升级版本号时用此标记识别旧配置）
+// V1=0xA5：不含 stab6chRev；V2=0xA6：含 stab6chRev（6CH Rev 反向开关）
+// V3=0xA7：含 Rate 档三项参数 stabRateGain / stabRateLimit / stabRateDeadband
+#define STABILIZER_CONFIG_MAGIC     0xA5
+#define STABILIZER_CONFIG_MAGIC_V2  0xA6
+#define STABILIZER_CONFIG_MAGIC_V3  0xA7
+
 typedef struct __attribute__((packed)) {
     uint32_t    version;
     uint8_t     uid[UID_LEN];
@@ -238,6 +245,24 @@ typedef struct __attribute__((packed)) {
                 teamracePitMode:1;  // FUTURE: Enable pit mode when disabling model
     uint8_t     targetSysId;
     uint8_t     sourceSysId;
+    // ---- 固定翼自稳参数（STABILIZER_ENABLE 功能，字段常驻以保持 EEPROM 布局稳定）----
+    uint8_t     stabConfigMagic;    // == STABILIZER_CONFIG_MAGIC 表示自稳参数已初始化
+    uint8_t     stabAirframe:1,     // 0=普通布局 1=飞翼布局（StabAirframe_e）
+                stabAileron:1,      // 0=1 副翼舵机 1=2 副翼舵机（StabAileron_e）
+                stabGainCh:4,       // 模式开关 RC 通道（0-15，0 基，默认 4=CH5）
+                                    //   三档：低=直通 中=Rate 高=Angle（实时判定，不存档）
+                stabRollDir:1,      // 0=正向 1=反向（横滚轴 IMU 修正方向，独立于 Invert）
+                stabPitchDir:1;     // 保留（俯仰已全模式直通，不再使用；字段常驻保布局）
+    uint8_t     stabRollKp;         // ×0.1，默认 10 = 1.0（Angle 横滚比例增益）
+    uint8_t     stabRollKd;         // ×0.01，默认 5 = 0.05（Angle 横滚阻尼增益）
+                                    //   注：仅 Angle 档使用；Rate 档阻尼用下面的 stabRateGain
+    uint8_t     stabPitchKp;        // ×0.1，保留（俯仰直通不再使用）
+    uint8_t     stabPitchKd;        // ×0.01，保留（俯仰直通不再使用）
+    uint8_t     stab6chRev;         // 0=CH6 直通正向 1=反向（普通布局 2 副翼舵机时左副翼差动；仅翻直通，修正保持差动）
+    // ---- 修改点 24：Rate 档独立参数（与 Angle 档 Kp/Kd 完全解耦，各自可调）----
+    uint8_t     stabRateGain;       // ×0.1，默认 8 = 0.8（Rate 阻尼增益 us/(°/s)）
+    uint8_t     stabRateLimit;      // Rate 修正限幅（us），默认 180 ≈ ±18% 满行程
+    uint8_t     stabRateDeadband;   // Rate 死区（°/s），默认 8（低于此角速度不介入）
 } rx_config_t;
 
 class RxConfig
@@ -276,6 +301,21 @@ public:
     uint8_t GetSourceSysId()  const { return m_config.sourceSysId; }
     rx_config_bindstorage_t GetBindStorage() const { return (rx_config_bindstorage_t)m_config.bindStorage; }
     bool IsOnLoan() const;
+    // 自稳参数（STABILIZER_ENABLE）
+    uint8_t  GetStabAirframe() const { return m_config.stabAirframe; }
+    uint8_t  GetStabAileron() const { return m_config.stabAileron; }
+    uint8_t  GetStabGainCh() const { return m_config.stabGainCh; }
+    uint8_t  GetStabRollKp() const { return m_config.stabRollKp; }
+    uint8_t  GetStabRollKd() const { return m_config.stabRollKd; }
+    uint8_t  GetStabPitchKp() const { return m_config.stabPitchKp; }
+    uint8_t  GetStabPitchKd() const { return m_config.stabPitchKd; }
+    uint8_t  GetStabRollDir() const { return m_config.stabRollDir; }
+    uint8_t  GetStabPitchDir() const { return m_config.stabPitchDir; }
+    uint8_t  GetStab6chRev() const { return m_config.stab6chRev; }
+    // 修改点 24：Rate 档独立参数（与 Angle 档 Kp/Kd 互不干扰）
+    uint8_t  GetStabRateGain() const { return m_config.stabRateGain; }
+    uint8_t  GetStabRateLimit() const { return m_config.stabRateLimit; }
+    uint8_t  GetStabRateDeadband() const { return m_config.stabRateDeadband; }
 
     // Setters
     void SetUID(uint8_t* uid);
@@ -302,6 +342,21 @@ public:
     void SetSourceSysId(uint8_t sysID);
     void SetBindStorage(rx_config_bindstorage_t value);
     void ReturnLoan();
+    // 自稳参数（STABILIZER_ENABLE）
+    void SetStabAirframe(uint8_t airframe);
+    void SetStabAileron(uint8_t aileron);
+    void SetStabGainCh(uint8_t gainCh);
+    void SetStabRollKp(uint8_t kp);
+    void SetStabRollKd(uint8_t kd);
+    void SetStabPitchKp(uint8_t kp);
+    void SetStabPitchKd(uint8_t kd);
+    void SetStabRollDir(uint8_t dir);
+    void SetStabPitchDir(uint8_t dir);
+    void SetStab6chRev(uint8_t rev);
+    // 修改点 24：Rate 档独立参数
+    void SetStabRateGain(uint8_t gain);
+    void SetStabRateLimit(uint8_t limit);
+    void SetStabRateDeadband(uint8_t deadband);
 
 private:
     void CheckUpdateFlashedUid(bool skipDescrimCheck);
@@ -310,6 +365,7 @@ private:
     void UpgradeEepromV5();
     void UpgradeEepromV6();
     void UpgradeEepromV7V8();
+    void SetStabilizerDefaults();
 
     rx_config_t m_config;
     ELRS_EEPROM *m_eeprom;

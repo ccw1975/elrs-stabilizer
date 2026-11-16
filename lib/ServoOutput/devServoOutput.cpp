@@ -7,6 +7,10 @@
 #include "logging.h"
 #include "rxtx_intf.h"
 
+#if defined(STABILIZER_ENABLE)
+#include "stabilizer.h"
+#endif
+
 static int8_t servoPins[PWM_MAX_CHANNELS];
 static pwm_channel_t pwmChannels[PWM_MAX_CHANNELS];
 static uint16_t pwmChannelValues[PWM_MAX_CHANNELS];
@@ -25,6 +29,17 @@ static constexpr uint32_t FAILSAFE_ABS_TIMEOUT_MS = 1000U;
 void ICACHE_RAM_ATTR servoNewChannelsAvailable()
 {
     newChannelsAvailable = true;
+}
+
+uint16_t servoOutputGetValue(uint8_t ch)
+{
+    // pwmChannelValues[ch] 为 servoWrite 写入的最终输出（已含 stabilizerApply 修正）。
+    // 初始值 UINT16_MAX 表示该通道尚未初始化/未收到有效数据，回退中位避免遥测异常值。
+    if (ch >= PWM_MAX_CHANNELS || pwmChannelValues[ch] == UINT16_MAX)
+    {
+        return 1500;
+    }
+    return pwmChannelValues[ch];
 }
 
 uint16_t servoOutputModeToFrequency(eServoOutputMode mode)
@@ -130,6 +145,18 @@ static void servosUpdate(unsigned long now)
             {
                 us = 3000U - us;
             }
+#if defined(STABILIZER_ENABLE)
+            // 自稳双副翼模式(CH6=左副翼差动)：开启 6CH Rev 时 CH6 直通信号绕
+            // 中位反向，使左右舵面差动；自稳修正仍为 -roll 差动不受影响，
+            // 与通道映射页 Invert(直通+修正一起翻)完全独立。
+            if (ch == 5 && config.GetStabAirframe() == STAB_AIRFRAME_NORMAL &&
+                config.GetStabAileron() == STAB_AILERON_2SERVO && config.GetStab6chRev())
+            {
+                us = 3000U - us;
+            }
+            // 姿态自稳：在舵机空间叠加修正（未启用/异常时原样返回）
+            us = stabilizerApply(ch, us);
+#endif
             servoWrite(ch, us);
         } /* for each servo */
     }     /* if newChannelsAvailable */

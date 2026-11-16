@@ -2,10 +2,10 @@
     "radio_busy": 2,
     "radio_dio1": 8,
     "radio_miso": 5,
-    "radio_mosi": 4,
+    "radio_mosi": 6,
     "radio_nss": 9,
-    "radio_rst": 10,
-    "radio_sck": 6,
+    "radio_rst": 0,
+    "radio_sck": 4,
     "power_min": 0,
     "power_high": 0,
     "power_max": 0,
@@ -13,7 +13,7 @@
     "power_control": 0,
     "power_values": [13],
     "power_lna_gain": 0,
-    "pwm_outputs": [3],
-    "i2c_sda": 21,
-    "i2c_scl": 20
+    "pwm_outputs": [1, 10, 19, 18, 20, 21],
+    "i2c_sda": 7,
+    "i2c_scl": 3
 }

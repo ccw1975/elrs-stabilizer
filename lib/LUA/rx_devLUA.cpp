@@ -4,6 +4,7 @@
 #include "helpers.h"
 #include "devServoOutput.h"
 #include "deferred.h"
+#include "stabilizer.h"
 
 #define RX_HAS_SERIAL1 (GPIO_PIN_SERIAL1_TX != UNDEF_PIN || OPT_HAS_SERVO_OUTPUT)
 
@@ -190,7 +191,210 @@ static struct luaItem_command luaSetFailsafe = {
 
 #endif // GPIO_PIN_PWM_OUTPUTS
 
-//---------------------------- Output Mapping -----------------------------
+//---------------------------- Stabilizer -----------------------------
+
+#if defined(STABILIZER_ENABLE) && defined(GPIO_PIN_PWM_OUTPUTS)
+static struct luaItem_folder luaStabilizerFolder = {
+    {"Stabilizer", CRSF_FOLDER},
+};
+
+// 菜单说明：
+// 2026-08-26 精简：保留 IMU 状态 + PDI 参数 + 机身布局/副翼/模式开关通道配置；
+//   移除快照显示/原始数据/诊断计数（走 CRSF ATTITUDE 遥测与 LUA UpdCnt 等）。
+// 2026-08-26 增：Roll Dir / Pitch Dir 轴方向开关（独立于 Invert，治传感器装反）。
+// 2026-09-06（修改点 23）：三档模式（低=直通 / 中=Rate / 高=Angle），俯仰全模式
+//   直通 → Pitch Kp/Kd/Pitch Dir 从菜单隐藏（config 字段保留）；仅横滚介入。
+static struct luaItem_selection luaStabAirframe = {
+    {"Airframe", CRSF_TEXT_SELECTION},
+    0, // value
+    "Normal;Wing",
+    STR_EMPTYSPACE
+};
+
+static struct luaItem_selection luaStabAileron = {
+    {"Aileron", CRSF_TEXT_SELECTION},
+    0, // value
+    "1 Servo;2 Servo",
+    STR_EMPTYSPACE
+};
+
+static struct luaItem_selection luaStabGainCh = {
+    {"Gain Switch", CRSF_TEXT_SELECTION},
+    0, // value
+    "CH1;CH2;CH3;CH4;CH5;CH6;CH7;CH8;CH9;CH10;CH11;CH12",
+    STR_EMPTYSPACE
+};
+
+static struct luaItem_int8 luaStabRollKp = {
+  {"Roll Kp", CRSF_UINT8},
+  {
+    {
+      (uint8_t)10,      // value (×0.1 = 1.0)
+      (uint8_t)0,       // min
+      (uint8_t)25,      // max (2.5)
+    }
+  },
+  STR_EMPTYSPACE
+};
+
+static struct luaItem_int8 luaStabRollKd = {
+  {"Roll Kd", CRSF_UINT8},
+  {
+    {
+      (uint8_t)5,       // value (×0.01 = 0.05)
+      (uint8_t)0,       // min
+      (uint8_t)50,      // max (0.50)
+    }
+  },
+  STR_EMPTYSPACE
+};
+
+// 修改点 24：Rate 档独立参数（与 Angle 档 Roll Kp/Kd 完全解耦，各自可调）。
+// 背景：Rate 档原为固定宏（增益 2.0、限幅 ±410us），实测反应过快、左右晃动、
+// 舵面角度过大（是 Angle 档 ±105us 的 4 倍）。现改为可调并下调默认值，
+// 另加死区抑制静止/手抖时的抖舵（输出低通为写死宏，不占菜单）。
+static struct luaItem_int8 luaStabRateGain = {
+  {"Rate Gain", CRSF_UINT8},
+  {
+    {
+      (uint8_t)8,       // value (×0.1 = 0.8)
+      (uint8_t)0,       // min
+      (uint8_t)30,      // max (3.0)
+    }
+  },
+  STR_EMPTYSPACE
+};
+
+static struct luaItem_int8 luaStabRateLimit = {
+  {"Rate Limit", CRSF_UINT8},
+  {
+    {
+      (uint8_t)180,     // value (us，≈±18% 满行程)
+      (uint8_t)0,       // min
+      (uint8_t)255,     // max
+    }
+  },
+  STR_EMPTYSPACE
+};
+
+static struct luaItem_int8 luaStabRateDead = {
+  {"Rate Dead", CRSF_UINT8},
+  {
+    {
+      (uint8_t)8,       // value (°/s 死区)
+      (uint8_t)0,       // min
+      (uint8_t)30,      // max
+    }
+  },
+  STR_EMPTYSPACE
+};
+
+// 修改点 23：俯仰全模式直通，Pitch Kp/Kd/Pitch Dir 已无作用，从菜单隐藏。
+// （config 字段保留不删，避免动 EEPROM magic；恢复俯仰介入时取消注册即可。）
+// static struct luaItem_int8 luaStabPitchKp = { ... };
+// static struct luaItem_int8 luaStabPitchKd = { ... };
+// static struct luaItem_selection luaStabPitchDir = { ... };
+
+// 轴方向开关：只翻 IMU 修正方向（独立于通道映射页的 Invert）。
+// 用于传感器装反等"摇杆方向正确、自稳方向反"的场景。
+static struct luaItem_selection luaStabRollDir = {
+    {"Roll Dir", CRSF_TEXT_SELECTION},
+    0, // value
+    "Normal;Rev",
+    STR_EMPTYSPACE
+};
+
+// CH6 反向：普通布局 + 2 副翼舵机时，左副翼(CH6)直通信号绕中位反向，
+// 使左右舵面差动（等效遥控器双副翼左通道反向）。只翻直通信号，
+// 自稳修正仍为 -roll 差动不受影响；与通道映射页 Invert(直通+修正一起翻)完全独立。
+static struct luaItem_selection luaStab6chRev = {
+    {"6CH Rev", CRSF_TEXT_SELECTION},
+    0, // value
+    "Normal;Rev",
+    STR_EMPTYSPACE
+};
+
+// ---- 调试状态参数（只读，event() 中实时刷新，供遥控器 LUA 菜单查看）----
+static struct luaItem_int8 luaStabImuStat = {
+  {"IMU", CRSF_UINT8},
+  {
+    {
+      (uint8_t)0,       // value: 0=未就绪 1=正常
+      (uint8_t)0,       // min
+      (uint8_t)1,       // max
+    }
+  },
+  STR_EMPTYSPACE
+};
+
+static void luaparamStabAirframe(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabAirframe(arg);
+}
+
+static void luaparamStabAileron(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabAileron(arg);
+}
+
+static void luaparamStabGainCh(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabGainCh(arg);
+}
+
+static void luaparamStabRollKp(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabRollKp(arg);
+}
+
+static void luaparamStabRollKd(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabRollKd(arg);
+}
+
+static void luaparamStabRateGain(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabRateGain(arg);
+}
+
+static void luaparamStabRateLimit(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabRateLimit(arg);
+}
+
+static void luaparamStabRateDead(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabRateDeadband(arg);
+}
+
+// 修改点 23：随 luaStabPitchKp/Kd/PitchDir 一并隐藏（见上方定义处注释）。
+// static void luaparamStabPitchKp(...) { config.SetStabPitchKp(arg); }
+// static void luaparamStabPitchKd(...) { config.SetStabPitchKd(arg); }
+// static void luaparamStabPitchDir(...) { config.SetStabPitchDir(arg); }
+
+static void luaparamStabRollDir(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStabRollDir(arg);
+}
+
+static void luaparamStab6chRev(struct luaPropertiesCommon *item, uint8_t arg)
+{
+    UNUSED(item);
+    config.SetStab6chRev(arg);
+}
+
+#endif // STABILIZER_ENABLE && GPIO_PIN_PWM_OUTPUTS
+
+//---------------------------- Stabilizer -----------------------------
 
 static struct luaItem_selection luaBindStorage = {
     {"Bind Storage", CRSF_TEXT_SELECTION},
@@ -597,6 +801,25 @@ static void registerLuaParameters()
   }
 #endif
 
+#if defined(STABILIZER_ENABLE) && defined(GPIO_PIN_PWM_OUTPUTS)
+  if (OPT_HAS_SERVO_OUTPUT)
+  {
+    registerLUAParameter(&luaStabilizerFolder);
+    registerLUAParameter(&luaStabAirframe, &luaparamStabAirframe, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabAileron, &luaparamStabAileron, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabGainCh, &luaparamStabGainCh, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabRollKp, &luaparamStabRollKp, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabRollKd, &luaparamStabRollKd, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabRateGain, &luaparamStabRateGain, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabRateLimit, &luaparamStabRateLimit, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabRateDead, &luaparamStabRateDead, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStabRollDir, &luaparamStabRollDir, luaStabilizerFolder.common.id);
+    registerLUAParameter(&luaStab6chRev, &luaparamStab6chRev, luaStabilizerFolder.common.id);
+    // 调试状态参数：不注册回调 → 只读（遥控器侧修改会被忽略）
+    registerLUAParameter(&luaStabImuStat, nullptr, luaStabilizerFolder.common.id);
+  }
+#endif
+
   registerLUAParameter(&luaBindStorage, [](struct luaPropertiesCommon* item, uint8_t arg) {
     config.SetBindStorage((rx_config_bindstorage_t)arg);
   });
@@ -663,6 +886,22 @@ static int event()
   }
 #endif
 
+#if defined(STABILIZER_ENABLE) && defined(GPIO_PIN_PWM_OUTPUTS)
+  if (OPT_HAS_SERVO_OUTPUT)
+  {
+    setLuaTextSelectionValue(&luaStabAirframe, config.GetStabAirframe());
+    setLuaTextSelectionValue(&luaStabAileron, config.GetStabAileron());
+    setLuaTextSelectionValue(&luaStabGainCh, config.GetStabGainCh());
+    setLuaUint8Value(&luaStabRollKp, config.GetStabRollKp());
+    setLuaUint8Value(&luaStabRollKd, config.GetStabRollKd());
+    setLuaUint8Value(&luaStabRateGain, config.GetStabRateGain());
+    setLuaUint8Value(&luaStabRateLimit, config.GetStabRateLimit());
+    setLuaUint8Value(&luaStabRateDead, config.GetStabRateDeadband());
+    setLuaTextSelectionValue(&luaStabRollDir, config.GetStabRollDir());
+    setLuaTextSelectionValue(&luaStab6chRev, config.GetStab6chRev());
+  }
+#endif
+
   if (config.GetModelId() == 255)
   {
     setLuaStringValue(&luaModelNumber, "Off");
@@ -695,6 +934,15 @@ static int event()
 
 static int timeout()
 {
+#if defined(STABILIZER_ENABLE) && defined(GPIO_PIN_PWM_OUTPUTS)
+  if (OPT_HAS_SERVO_OUTPUT)
+  {
+    // 调试状态：IMU 健康标志（未初始化时保持 0）
+    // event() 只在连接状态变化等事件时触发，动态值必须在这里周期性刷新
+    // （连接时 interval/250 ms，未连接 1s），遥控器 LUA 菜单读取时即为最新值
+    setLuaUint8Value(&luaStabImuStat, stabilizer.imuOk() ? 1 : 0);
+  }
+#endif
   luaHandleUpdateParameter();
   // Receivers can only `UpdateParamReq == true` every 4th packet due to the transmitter cadence in 1:2
   // Channels, Downlink Telemetry Slot, Uplink Telemetry (the write command), Downlink Telemetry Slot...

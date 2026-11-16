@@ -14,6 +14,10 @@ extern device_t ServoOut_device;
 
 // Notify this unit that new channel data has arrived
 void servoNewChannelsAvailable();
+
+// 读取某 PWM 通道当前实际输出值（us，已含自稳修正；未初始化/无有效输出返回 1500 中位）
+uint16_t servoOutputGetValue(uint8_t ch);
 #else
 inline void servoNewChannelsAvailable(){};
+inline uint16_t servoOutputGetValue(uint8_t ch){ return 1500; }
 #endif

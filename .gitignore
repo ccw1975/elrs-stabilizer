@@ -11,3 +11,7 @@ include/WebContent.h
 include/flashdiscrim.h
 .DS_Store
 build_*.log
+# 本地参考文档（第三方版权资料，不公开分发）
+*.pdf
+# 修改前的本地备份文件
+*.orig

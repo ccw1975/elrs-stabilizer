@@ -40,6 +40,10 @@
 #include "devMSPVTX.h"
 #include "devThermal.h"
 
+#if defined(STABILIZER_ENABLE) && defined(GPIO_PIN_PWM_OUTPUTS)
+#include "stabilizer.h"
+#endif
+
 #if defined(PLATFORM_ESP8266)
 #include <user_interface.h>
 #include <FS.h>
@@ -113,6 +117,9 @@ device_affinity_t ui_devices[] = {
 #endif
 #if defined(HAS_THERMAL) || defined(HAS_FAN)
   {&Thermal_device, 0},
+#endif
+#if defined(STABILIZER_ENABLE) && defined(GPIO_PIN_PWM_OUTPUTS)
+  {&Stabilizer_device, 0},
 #endif
 };
 

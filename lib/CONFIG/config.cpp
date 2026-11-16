@@ -729,6 +729,36 @@ void RxConfig::Load()
     if (version == RX_CONFIG_VERSION)
     {
         CheckUpdateFlashedUid(false);
+        // 自稳字段是在不升级版本号的情况下追加到结构体末尾的：
+        // 旧固件写入的配置缺少该段，用魔法标记识别并补默认值。
+        // V1(0xA5) → V2(0xA6)：补 stab6chRev=0，保留其余自稳参数不重置；
+        // V2(0xA6) → V3(0xA7)：补 Rate 档三项参数默认值，保留其余不重置；
+        // 其他不匹配值：整段重置为默认。
+        if (m_config.stabConfigMagic != STABILIZER_CONFIG_MAGIC_V3)
+        {
+            if (m_config.stabConfigMagic == STABILIZER_CONFIG_MAGIC_V2)
+            {
+                // 已有配置升级：只补新增的 Rate 参数，用户已调好的 Kp/Kd 等保持
+                m_config.stabRateGain = 8;      // 0.8
+                m_config.stabRateLimit = 180;   // us（≈±18% 行程）
+                m_config.stabRateDeadband = 8;  // °/s
+                m_config.stabConfigMagic = STABILIZER_CONFIG_MAGIC_V3;
+            }
+            else if (m_config.stabConfigMagic == STABILIZER_CONFIG_MAGIC)
+            {
+                m_config.stab6chRev = 0;
+                m_config.stabRateGain = 8;
+                m_config.stabRateLimit = 180;
+                m_config.stabRateDeadband = 8;
+                m_config.stabConfigMagic = STABILIZER_CONFIG_MAGIC_V3;
+            }
+            else
+            {
+                SetStabilizerDefaults();
+            }
+            m_modified = true;
+            Commit();
+        }
         return;
     }
 
@@ -1116,6 +1146,9 @@ RxConfig::SetDefaults(bool commit)
 
     m_config.teamraceChannel = AUX7; // CH11
 
+    // 自稳参数默认值（Airframe=普通、Aileron=1 舵机、GainCh=CH5、Kp=1.0/Kd=0.05）
+    SetStabilizerDefaults();
+
 #if defined(RCVR_INVERT_TX)
     m_config.serialProtocol = PROTOCOL_INVERTED_CRSF;
 #endif
@@ -1280,6 +1313,146 @@ void RxConfig::ReturnLoan()
         else
             memset(m_config.uid, 0, UID_LEN);
 
+        m_modified = true;
+    }
+}
+
+// ========================================================
+// 固定翼自稳参数（STABILIZER_ENABLE）
+// ========================================================
+
+void RxConfig::SetStabilizerDefaults()
+{
+    m_config.stabConfigMagic = STABILIZER_CONFIG_MAGIC_V3;
+    m_config.stabAirframe = 0;    // 普通布局
+    m_config.stabAileron = 0;     // 1 个副翼舵机
+    m_config.stabGainCh = 4;      // CH5（0 基）
+    m_config.stabRollKp = 10;     // 1.0
+    m_config.stabRollKd = 5;      // 0.05
+    m_config.stabPitchKp = 10;    // 1.0
+    m_config.stabPitchKd = 5;     // 0.05
+    m_config.stabRollDir = 0;     // 正向
+    m_config.stabPitchDir = 0;    // 正向
+    m_config.stab6chRev = 0;      // CH6 直通正向
+    // 修改点 24：Rate 档独立参数默认值（原固定宏 2.0 / ±410us 实测过冲晃动，下调）
+    m_config.stabRateGain = 8;        // ×0.1 = 0.8
+    m_config.stabRateLimit = 180;     // us ≈ ±18% 满行程（Angle 档为 ±105us）
+    m_config.stabRateDeadband = 8;    // °/s
+}
+
+void RxConfig::SetStabAirframe(uint8_t airframe)
+{
+    if (m_config.stabAirframe != airframe)
+    {
+        m_config.stabAirframe = airframe;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabAileron(uint8_t aileron)
+{
+    if (m_config.stabAileron != aileron)
+    {
+        m_config.stabAileron = aileron;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabGainCh(uint8_t gainCh)
+{
+    if (m_config.stabGainCh != gainCh)
+    {
+        m_config.stabGainCh = gainCh;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabRollKp(uint8_t kp)
+{
+    if (m_config.stabRollKp != kp)
+    {
+        m_config.stabRollKp = kp;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabRollKd(uint8_t kd)
+{
+    if (m_config.stabRollKd != kd)
+    {
+        m_config.stabRollKd = kd;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabPitchKp(uint8_t kp)
+{
+    if (m_config.stabPitchKp != kp)
+    {
+        m_config.stabPitchKp = kp;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabPitchKd(uint8_t kd)
+{
+    if (m_config.stabPitchKd != kd)
+    {
+        m_config.stabPitchKd = kd;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabRollDir(uint8_t dir)
+{
+    if (m_config.stabRollDir != dir)
+    {
+        m_config.stabRollDir = dir;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabPitchDir(uint8_t dir)
+{
+    if (m_config.stabPitchDir != dir)
+    {
+        m_config.stabPitchDir = dir;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStab6chRev(uint8_t rev)
+{
+    if (m_config.stab6chRev != rev)
+    {
+        m_config.stab6chRev = rev;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabRateGain(uint8_t gain)
+{
+    if (m_config.stabRateGain != gain)
+    {
+        m_config.stabRateGain = gain;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabRateLimit(uint8_t limit)
+{
+    if (m_config.stabRateLimit != limit)
+    {
+        m_config.stabRateLimit = limit;
+        m_modified = true;
+    }
+}
+
+void RxConfig::SetStabRateDeadband(uint8_t deadband)
+{
+    if (m_config.stabRateDeadband != deadband)
+    {
+        m_config.stabRateDeadband = deadband;
         m_modified = true;
     }
 }

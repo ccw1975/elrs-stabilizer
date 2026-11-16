@@ -122,3 +122,11 @@
 
 # Use an ELRS TX and RX as a transparent UART over the air
 #-DUSE_AIRPORT_AT_BAUD=9600
+
+### STABILIZER (Fixed-wing attitude stabilization) ###
+
+# Fixed-wing stabilizer for PWM RX. Uncomment to enable.
+# Requires MPU6500/MPU6050 on I2C (GPIO3=SCL, GPIO7=SDA on DIY C3 2400 PWM).
+# Adds a "Stabilizer" folder to the LUA script with Airframe/Aileron/Gain Ch/Kp/Kd.
+# Only affects PWM outputs; servo-space correction, bypassed when off.
+-DSTABILIZER_ENABLE
